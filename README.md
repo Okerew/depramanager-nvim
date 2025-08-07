@@ -12,6 +12,8 @@ Automatic highlighting of outdaded depedencies in these files (requirements.txt,
 ### Installation:
 Any plugin manager should do the job but here is an example with vim plug
 ```vim
+Plug 'rcarriga/nvim-notify'
+Plug 'nvim-telescope/telescope.nvim'
 Plug 'Okerew/depramanager-nvim'
 ```
 
