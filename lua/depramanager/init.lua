@@ -44,33 +44,32 @@ local function clear_highlights(bufnr)
 	vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
 end
 
--- === Python file highlighting ===
-local function highlight_python_files()
-	local python_files = { "requirements.txt" }
+-- Cache for buffer mappings to avoid repeated lookups
+local buffer_cache = {}
+local file_patterns = {
+	python = { "requirements%.txt$" },
+	go = { "go%.mod$" },
+	npm = { "package%.json$" },
+}
 
-	for _, filename in ipairs(python_files) do
-		local filepath = vim.fn.getcwd() .. "/" .. filename
-		if vim.fn.filereadable(filepath) then
-			for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-				local buf_name = vim.api.nvim_buf_get_name(bufnr)
-				if buf_name:match(filename .. "$") then
-					clear_highlights(bufnr)
-					local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+-- Rebuild buffer cache when needed
+local function rebuild_buffer_cache()
+	buffer_cache = { python = {}, go = {}, npm = {} }
 
-					for line_num, line_content in ipairs(lines) do
-						line_num = line_num - 1
-
-						if filename == "requirements.txt" then
-							local package, version = line_content:match("^([%w%-_%.]+)[=<>~!]+([%d%.%w%-%.]+)")
-							if
-								package
-								and version
-								and outdated_packages.python
-								and outdated_packages.python[package]
-							then
-								highlight_version_in_buffer(bufnr, line_num, line_content, package, version)
-								add_virtual_text(bufnr, line_num, version, outdated_packages.python[package], package)
-							end
+	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+		if vim.api.nvim_buf_is_loaded(bufnr) then
+			local buf_name = vim.api.nvim_buf_get_name(bufnr)
+			if buf_name and buf_name ~= "" then
+				-- Check each file type pattern
+				for lang, patterns in pairs(file_patterns) do
+					for _, pattern in ipairs(patterns) do
+						if buf_name:match(pattern) then
+							table.insert(buffer_cache[lang], {
+								bufnr = bufnr,
+								name = buf_name,
+								filename = buf_name:match("([^/]+)$") or "",
+							})
+							break
 						end
 					end
 				end
@@ -79,60 +78,132 @@ local function highlight_python_files()
 	end
 end
 
--- === Go file highlighting ===
-local function highlight_go_mod()
-	local filepath = vim.fn.getcwd() .. "/go.mod"
-	if not vim.fn.filereadable(filepath) then
-		return
+-- Cache file existence checks
+local file_exists_cache = {}
+local function file_exists_cached(filepath)
+	if file_exists_cache[filepath] == nil then
+		file_exists_cache[filepath] = vim.fn.filereadable(filepath) == 1
+	end
+	return file_exists_cache[filepath]
+end
+
+-- Clear caches when files change
+local function clear_caches()
+	buffer_cache = {}
+	file_exists_cache = {}
+end
+
+-- Python file highlighting
+local function highlight_python_files()
+	if not buffer_cache.python then
+		rebuild_buffer_cache()
 	end
 
-	-- Find if go.mod is open in a buffer
-	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-		local buf_name = vim.api.nvim_buf_get_name(bufnr)
-		if buf_name:match("go%.mod$") then
+	for _, buf_info in ipairs(buffer_cache.python) do
+		local bufnr, filename = buf_info.bufnr, buf_info.filename
+
+		if filename == "requirements.txt" then
+			local filepath = vim.fn.getcwd() .. "/" .. filename
+			if not file_exists_cached(filepath) then
+				goto continue
+			end
+
 			clear_highlights(bufnr)
 			local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-			for line_num, line_content in ipairs(lines) do
-				line_num = line_num - 1 -- 0-indexed
+			-- Pre-compile common patterns
+			local package_pattern = "^([%w%-_%.]+)[=<>~!]+([%d%.%w%-%.]+)"
 
-				-- Parse go.mod format: module version (in require block or direct)
-				-- Handle both: "github.com/pkg/errors v0.9.1" and "	github.com/pkg/errors v0.9.1"
-				local module, version = line_content:match("^%s*([%w%.%-_/]+)%s+v([%d%.%w%-%.]+)")
-				if module and version and outdated_packages.go and outdated_packages.go[module] then
-					highlight_version_in_buffer(bufnr, line_num, line_content, module, "v" .. version)
-					add_virtual_text(bufnr, line_num, "v" .. version, outdated_packages.go[module], module)
+			for line_num, line_content in ipairs(lines) do
+				if line_content ~= "" and not line_content:match("^%s*#") then -- Skip empty lines and comments
+					local package, version = line_content:match(package_pattern)
+					if package and version and outdated_packages.python and outdated_packages.python[package] then
+						line_num = line_num - 1 -- Convert to 0-indexed
+						highlight_version_in_buffer(bufnr, line_num, line_content, package, version)
+						add_virtual_text(bufnr, line_num, version, outdated_packages.python[package], package)
+					end
 				end
 			end
 		end
+		::continue::
 	end
 end
 
--- === npm file highlighting ===
-local function highlight_package_json()
-	local filepath = vim.fn.getcwd() .. "/package.json"
-	if not vim.fn.filereadable(filepath) then
-		return
+-- Go file highlighting
+local function highlight_go_mod()
+	if not buffer_cache.go then
+		rebuild_buffer_cache()
 	end
 
-	-- Find if package.json is open in a buffer
-	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-		local buf_name = vim.api.nvim_buf_get_name(bufnr)
-		if buf_name:match("package%.json$") then
-			clear_highlights(bufnr)
-			local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+	for _, buf_info in ipairs(buffer_cache.go) do
+		local bufnr = buf_info.bufnr
+		local filepath = vim.fn.getcwd() .. "/go.mod"
+		if not file_exists_cached(filepath) then
+			goto continue
+		end
 
-			for line_num, line_content in ipairs(lines) do
-				line_num = line_num - 1 -- 0-indexed
+		clear_highlights(bufnr)
+		local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-				-- Parse package.json format: "package": "^version" or "package": "~version"
-				local package, version = line_content:match('"([%w%-@/]+)"%s*:%s*"[%^~]?([%d%.%w%-]+)"')
+		-- Pre-compile pattern
+		local module_pattern = "^%s*([%w%.%-_/]+)%s+v([%d%.%w%-%.]+)"
+
+		for line_num, line_content in ipairs(lines) do
+			if line_content ~= "" and not line_content:match("^%s*//") then -- Skip empty lines and comments
+				local module, version = line_content:match(module_pattern)
+				if module and version and outdated_packages.go and outdated_packages.go[module] then
+					line_num = line_num - 1 -- Convert to 0-indexed
+					local full_version = "v" .. version
+					highlight_version_in_buffer(bufnr, line_num, line_content, module, full_version)
+					add_virtual_text(bufnr, line_num, full_version, outdated_packages.go[module], module)
+				end
+			end
+		end
+		::continue::
+	end
+end
+
+-- Npm file highlighting
+local function highlight_package_json()
+	if not buffer_cache.npm then
+		rebuild_buffer_cache()
+	end
+
+	for _, buf_info in ipairs(buffer_cache.npm) do
+		local bufnr = buf_info.bufnr
+		local filepath = vim.fn.getcwd() .. "/package.json"
+		if not file_exists_cached(filepath) then
+			goto continue
+		end
+
+		clear_highlights(bufnr)
+		local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+		-- Pre-compile pattern and track if we're in dependencies section
+		local package_pattern = '"([%w%-@/]+)"%s*:%s*"[%^~]?([%d%.%w%-]+)"'
+		local in_deps_section = false
+
+		for line_num, line_content in ipairs(lines) do
+			-- Optimize by only checking lines in dependency sections
+			if line_content:match('"dependencies"') or line_content:match('"devDependencies"') then
+				in_deps_section = true
+				goto continue_line
+			elseif line_content:match("^%s*}") then
+				in_deps_section = false
+				goto continue_line
+			end
+
+			if in_deps_section and line_content ~= "" then
+				local package, version = line_content:match(package_pattern)
 				if package and version and outdated_packages.npm and outdated_packages.npm[package] then
+					line_num = line_num - 1 -- Convert to 0-indexed
 					highlight_version_in_buffer(bufnr, line_num, line_content, package, version)
 					add_virtual_text(bufnr, line_num, version, outdated_packages.npm[package], package)
 				end
 			end
+			::continue_line::
 		end
+		::continue::
 	end
 end
 
@@ -616,11 +687,18 @@ end
 local function setup_auto_highlighting()
 	local group = vim.api.nvim_create_augroup("OutdatedPackageHighlight", { clear = true })
 
-	-- Python files
+	-- Clear caches when buffers change
+	vim.api.nvim_create_autocmd({ "BufAdd", "BufDelete", "BufWipeout" }, {
+		group = group,
+		callback = clear_caches,
+	})
+
+	-- Python files - only rebuild cache if needed
 	vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost" }, {
 		group = group,
 		pattern = "requirements.txt",
 		callback = function()
+			clear_caches()
 			M.python_highlight()
 		end,
 	})
@@ -630,6 +708,7 @@ local function setup_auto_highlighting()
 		group = group,
 		pattern = "go.mod",
 		callback = function()
+			clear_caches()
 			M.go_highlight()
 		end,
 	})
@@ -639,6 +718,7 @@ local function setup_auto_highlighting()
 		group = group,
 		pattern = "package.json",
 		callback = function()
+			clear_caches()
 			M.npm_highlight()
 		end,
 	})
@@ -647,6 +727,11 @@ end
 -- Initialize auto-highlighting
 function M.setup()
 	setup_auto_highlighting()
+end
+
+function M.refresh_cache()
+	clear_caches()
+	rebuild_buffer_cache()
 end
 
 -- Clear all highlights (useful for cleanup)
