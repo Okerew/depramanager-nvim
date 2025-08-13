@@ -3,11 +3,13 @@ Depramanager port for nvim
 
 ### Features
 
-Vulnerability scanning
+**Vulnerability scanning**
 
-See outdated pacakges
+**See outdated pacakges**
 
-Automatic highlighting of outdaded depedencies in these files (requirements.txt, package.json, go.mod)
+**Automatic highlighting of outdaded depedencies in these files (requirements.txt, package.json, go.mod)**
+
+Note: you must wait a bit if there are a lot of packages.
 
 ### Installation:
 Any plugin manager should do the job but here is an example with vim plug
