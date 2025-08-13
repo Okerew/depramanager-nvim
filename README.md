@@ -29,6 +29,13 @@ local depramanager = require('depramanager')
 -- Enable auto-highlighting
 depramanager.setup()
 
+-- Optional
+-- depramanager.check_all()
+-- depramanager.clear_all_highlights()
+-- depramanager.refresh_cache()
+-- depramanager.status()
+
+-- === KEYBINDS ===
 -- Bind telescope functions to keys
 vim.keymap.set('n', '<leader>dp', depramanager.python_telescope, { desc = 'Outdated Python packages' })
 vim.keymap.set('n', '<leader>dg', depramanager.go_telescope, { desc = 'Outdated Go modules' })
