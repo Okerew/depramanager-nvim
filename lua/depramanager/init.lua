@@ -217,24 +217,28 @@ local function highlight_cargo_toml()
 	if not buffer_cache.rust then
 		rebuild_buffer_cache()
 	end
+
 	for _, buf_info in ipairs(buffer_cache.rust) do
 		local bufnr = buf_info.bufnr
 		local filepath = vim.fn.getcwd() .. "/Cargo.toml"
 		if not file_exists_cached(filepath) then
 			goto continue
 		end
+
 		clear_highlights(bufnr)
 		local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 		local package_pattern = '^([%w%-_]+)%s*=%s*"([%d%.%w%-%.]+)"'
 		local in_deps_section = false
+
 		for line_num, line_content in ipairs(lines) do
-			if line_content:match("^%[dependencies%]") or line_content:match("^%[dev%-dependencies%]") then
+			if line_content:match("^%[.*dependencies%]") then
 				in_deps_section = true
 				goto continue_line
 			elseif line_content:match("^%[") then
 				in_deps_section = false
 				goto continue_line
 			end
+
 			if in_deps_section and line_content ~= "" and not line_content:match("^%s*#") then
 				local package, version = line_content:match(package_pattern)
 				if package and version and outdated_packages.rust and outdated_packages.rust[package] then
@@ -514,24 +518,18 @@ end
 
 local function get_rust_outdated_async(callback)
 	local cwd = vim.fn.getcwd()
-	if not vim.fn.filereadable(cwd .. "/Cargo.toml") then
+	if vim.fn.filereadable(cwd .. "/Cargo.toml") ~= 1 then
 		callback(nil, "No Cargo.toml found in project")
 		return
 	end
+
 	local cargo_path = vim.fn.exepath("cargo")
-	if not cargo_path then
+	if not cargo_path or cargo_path == "" then
 		callback(nil, "Cargo not found. Please install Rust: https://rustup.rs/")
 		return
 	end
-	-- Use cargo-outdated if available, otherwise provide helpful message
-	local cargo_outdated_path = vim.fn.exepath("cargo-outdated")
-	local cmd
-	if cargo_outdated_path then
-		cmd = "cargo outdated --format=json"
-	else
-		callback(nil, "For best results, install cargo-outdated: cargo install cargo-outdated")
-		return
-	end
+
+	local cmd = "cargo outdated --format=json"
 
 	run_command_async(cmd, function(code, stdout_data, stderr_data)
 		if code ~= 0 then
@@ -539,16 +537,32 @@ local function get_rust_outdated_async(callback)
 			callback(nil, "Cargo outdated failed: " .. (error_msg or "unknown error"))
 			return
 		end
+
 		local output = table.concat(stdout_data, "")
 		local packages = {}
 		local display_results = {}
 
-		-- Parse JSON output from cargo-outdated
-		for crate_block in output:gmatch('"name":%s*"([^"]+)".-"project":%s*"([^"]+)".-"latest":%s*"([^"]+)"') do
-			local name, current, latest = crate_block:match("([^,]+),([^,]+),(.+)")
-			if name and current and latest and current ~= latest then
-				packages[name] = latest
-				table.insert(display_results, string.format("🦀 %s: %s → %s", name, current, latest))
+		-- Try parsing JSON first
+		local ok, parsed_data = pcall(vim.json.decode, output)
+		if ok and parsed_data then
+			for _, crate in ipairs(parsed_data) do
+				local name = crate.name
+				local current = crate.project
+				local latest = crate.latest
+				if current and latest and current ~= latest and latest ~= "removed" then
+					packages[name] = latest
+					table.insert(display_results, string.format("🦀 %s: %s → %s", name, current, latest))
+				end
+			end
+		else
+			-- Fallback regex parsing if JSON fails
+			for name, current, latest in
+				output:gmatch('"name":%s*"([^"]+)".-"project":%s*"([^"]+)".-"latest":%s*"([^"]+)"')
+			do
+				if current and latest and current ~= latest and latest ~= "removed" then
+					packages[name] = latest
+					table.insert(display_results, string.format("🦀 %s: %s → %s", name, current, latest))
+				end
 			end
 		end
 
@@ -688,11 +702,13 @@ local function get_rust_vulnerabilities_async(callback)
 		callback(nil, "No Cargo.toml found in project")
 		return
 	end
+
 	local cargo_audit_path = vim.fn.exepath("cargo-audit")
 	if not cargo_audit_path then
 		callback(nil, "cargo-audit not found. Install with: cargo install cargo-audit")
 		return
 	end
+
 	local cmd = "cargo audit --json"
 	run_command_async(cmd, function(code, stdout_data, stderr_data)
 		local json_str = table.concat(stdout_data, "")
@@ -700,23 +716,52 @@ local function get_rust_vulnerabilities_async(callback)
 			callback({}, nil, {})
 			return
 		end
+
 		local packages = {}
 		local display_results = {}
-		-- Parse vulnerabilities from cargo audit
-		for vuln_match in json_str:gmatch('"package":%s*"([^"]+)".-"title":%s*"([^"]+)".-"severity":%s*"([^"]+)"') do
-			local package_name, title, severity = vuln_match:match("([^,]+),([^,]+),(.+)")
-			if package_name and title and severity then
-				if not packages[package_name] then
-					packages[package_name] = { severity = severity, count = 0, vulns = {} }
+
+		-- Parse the JSON output from cargo-audit
+		local ok, parsed_data = pcall(vim.json.decode, json_str)
+		if ok and parsed_data and parsed_data.vulnerabilities and parsed_data.vulnerabilities.list then
+			for _, vulnerability in ipairs(parsed_data.vulnerabilities.list) do
+				local package_name = vulnerability.package.name
+				local advisory = vulnerability.advisory
+				if package_name and advisory then
+					if not packages[package_name] then
+						packages[package_name] = { severity = advisory.severity or "unknown", count = 0, vulns = {} }
+					end
+					packages[package_name].count = packages[package_name].count + 1
+					table.insert(packages[package_name].vulns, { id = advisory.id, title = advisory.title })
+					table.insert(
+						display_results,
+						string.format(
+							"🔒 [%s] %s: %s - %s",
+							advisory.severity or "unknown",
+							package_name,
+							advisory.id,
+							advisory.title:sub(1, 80) .. "..."
+						)
+					)
 				end
-				packages[package_name].count = packages[package_name].count + 1
-				table.insert(packages[package_name].vulns, { title = title })
-				table.insert(
-					display_results,
-					string.format("🔒 [%s] %s: %s", severity:upper(), package_name, title:sub(1, 80) .. "...")
-				)
+			end
+		else
+			-- Fallback parsing logic if JSON parsing fails
+			for vuln_match in json_str:gmatch('"package":%s*"([^"]+)".-"title":%s*"([^"]+)".-"severity":%s*"([^"]+)"') do
+				local package_name, title, severity = vuln_match:match("([^,]+),([^,]+),(.+)")
+				if package_name and title and severity then
+					if not packages[package_name] then
+						packages[package_name] = { severity = severity, count = 0, vulns = {} }
+					end
+					packages[package_name].count = packages[package_name].count + 1
+					table.insert(packages[package_name].vulns, { title = title })
+					table.insert(
+						display_results,
+						string.format("🔒 [%s] %s: %s", severity:upper(), package_name, title:sub(1, 80) .. "...")
+					)
+				end
 			end
 		end
+
 		callback(packages, nil, display_results)
 	end)
 end
