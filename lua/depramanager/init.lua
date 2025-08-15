@@ -695,11 +695,6 @@ local function get_rust_vulnerabilities_async(callback)
 	end
 	local cmd = "cargo audit --json"
 	run_command_async(cmd, function(code, stdout_data, stderr_data)
-		if code ~= 0 then
-			local error_msg = table.concat(stderr_data, "")
-			callback(nil, "cargo audit failed: " .. (error_msg or "unknown error"))
-			return
-		end
 		local json_str = table.concat(stdout_data, "")
 		if json_str == "" then
 			callback({}, nil, {})
