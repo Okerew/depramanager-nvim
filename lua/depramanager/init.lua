@@ -40,15 +40,16 @@ local function clear_highlights(bufnr)
 	vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
 end
 
-local buffer_cache = {}
 local file_patterns = {
 	python = { "requirements%.txt$" },
 	go = { "go%.mod$" },
 	npm = { "package%.json$" },
+	php = { "composer%.json$" },
+	rust = { "Cargo%.toml$" },
 }
 
 local function rebuild_buffer_cache()
-	buffer_cache = { python = {}, go = {}, npm = {} }
+	buffer_cache = { python = {}, go = {}, npm = {}, php = {}, rust = {} }
 	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
 		if vim.api.nvim_buf_is_loaded(bufnr) then
 			local buf_name = vim.api.nvim_buf_get_name(bufnr)
@@ -176,6 +177,78 @@ local function highlight_package_json()
 	end
 end
 
+local function highlight_composer_json()
+	if not buffer_cache.php then
+		rebuild_buffer_cache()
+	end
+	for _, buf_info in ipairs(buffer_cache.php) do
+		local bufnr = buf_info.bufnr
+		local filepath = vim.fn.getcwd() .. "/composer.json"
+		if not file_exists_cached(filepath) then
+			goto continue
+		end
+		clear_highlights(bufnr)
+		local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+		local package_pattern = '"([%w%-_/]+)"%s*:%s*"[%^~]?([%d%.%w%-]+)"'
+		local in_deps_section = false
+		for line_num, line_content in ipairs(lines) do
+			if line_content:match('"require"') or line_content:match('"require%-dev"') then
+				in_deps_section = true
+				goto continue_line
+			elseif line_content:match("^%s*}") then
+				in_deps_section = false
+				goto continue_line
+			end
+			if in_deps_section and line_content ~= "" then
+				local package, version = line_content:match(package_pattern)
+				if package and version and outdated_packages.php and outdated_packages.php[package] then
+					line_num = line_num - 1
+					highlight_version_in_buffer(bufnr, line_num, line_content, package, version)
+					add_virtual_text(bufnr, line_num, version, outdated_packages.php[package])
+				end
+			end
+			::continue_line::
+		end
+		::continue::
+	end
+end
+
+local function highlight_cargo_toml()
+	if not buffer_cache.rust then
+		rebuild_buffer_cache()
+	end
+	for _, buf_info in ipairs(buffer_cache.rust) do
+		local bufnr = buf_info.bufnr
+		local filepath = vim.fn.getcwd() .. "/Cargo.toml"
+		if not file_exists_cached(filepath) then
+			goto continue
+		end
+		clear_highlights(bufnr)
+		local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+		local package_pattern = '^([%w%-_]+)%s*=%s*"([%d%.%w%-%.]+)"'
+		local in_deps_section = false
+		for line_num, line_content in ipairs(lines) do
+			if line_content:match("^%[dependencies%]") or line_content:match("^%[dev%-dependencies%]") then
+				in_deps_section = true
+				goto continue_line
+			elseif line_content:match("^%[") then
+				in_deps_section = false
+				goto continue_line
+			end
+			if in_deps_section and line_content ~= "" and not line_content:match("^%s*#") then
+				local package, version = line_content:match(package_pattern)
+				if package and version and outdated_packages.rust and outdated_packages.rust[package] then
+					line_num = line_num - 1
+					highlight_version_in_buffer(bufnr, line_num, line_content, package, version)
+					add_virtual_text(bufnr, line_num, version, outdated_packages.rust[package])
+				end
+			end
+			::continue_line::
+		end
+		::continue::
+	end
+end
+
 local function create_enhanced_picker(title, results, lang)
 	if #results == 0 then
 		vim.notify("✅ No results to display", vim.log.levels.INFO)
@@ -210,6 +283,10 @@ local function create_enhanced_picker(title, results, lang)
 						M.go_telescope()
 					elseif lang == "npm" then
 						M.npm_telescope()
+					elseif lang == "php" then
+						M.php_telescope()
+					elseif lang == "rust" then
+						M.rust_telescope()
 					end
 				end)
 				return true
@@ -387,6 +464,98 @@ local function get_npm_outdated_async(callback)
 	end)
 end
 
+local function get_php_outdated_async(callback)
+	local cwd = vim.fn.getcwd()
+	if not vim.fn.filereadable(cwd .. "/composer.json") then
+		callback(nil, "No composer.json found in project")
+		return
+	end
+	local composer_path = vim.fn.exepath("composer")
+	if not composer_path then
+		callback(nil, "Composer not found. Please install Composer: https://getcomposer.org")
+		return
+	end
+	local cmd = "composer outdated --format=json --direct"
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code ~= 0 then
+			local error_msg = table.concat(stderr_data, "")
+			callback(nil, "Composer outdated failed: " .. (error_msg or "unknown error"))
+			return
+		end
+		local json_str = table.concat(stdout_data, "")
+		if json_str == "" or json_str == "[]" then
+			callback({}, nil, {})
+			return
+		end
+		local packages = {}
+		local display_results = {}
+		-- Parse JSON-like output from composer outdated
+		for package_block in json_str:gmatch('"name":%s*"([^"]+)".-"version":%s*"([^"]+)".-"latest":%s*"([^"]+)"') do
+			local name, current, latest = package_block:match("([^,]+),([^,]+),(.+)")
+			if name and current and latest then
+				packages[name] = latest
+				table.insert(display_results, string.format("🐘 %s: %s → %s", name, current, latest))
+			end
+		end
+		-- Fallback to plain text parsing if JSON parsing fails
+		if vim.tbl_isempty(packages) then
+			local lines = vim.split(json_str, "\n")
+			for _, line in ipairs(lines) do
+				local name, current, latest = line:match("^(%S+)%s+(%S+)%s+(%S+)")
+				if name and current and latest and name ~= "Name" then
+					packages[name] = latest
+					table.insert(display_results, string.format("🐘 %s: %s → %s", name, current, latest))
+				end
+			end
+		end
+		callback(packages, nil, display_results)
+	end)
+end
+
+local function get_rust_outdated_async(callback)
+	local cwd = vim.fn.getcwd()
+	if not vim.fn.filereadable(cwd .. "/Cargo.toml") then
+		callback(nil, "No Cargo.toml found in project")
+		return
+	end
+	local cargo_path = vim.fn.exepath("cargo")
+	if not cargo_path then
+		callback(nil, "Cargo not found. Please install Rust: https://rustup.rs/")
+		return
+	end
+	-- Use cargo-outdated if available, otherwise provide helpful message
+	local cargo_outdated_path = vim.fn.exepath("cargo-outdated")
+	local cmd
+	if cargo_outdated_path then
+		cmd = "cargo outdated --format=json"
+	else
+		callback(nil, "For best results, install cargo-outdated: cargo install cargo-outdated")
+		return
+	end
+
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code ~= 0 then
+			local error_msg = table.concat(stderr_data, "")
+			callback(nil, "Cargo outdated failed: " .. (error_msg or "unknown error"))
+			return
+		end
+		local output = table.concat(stdout_data, "")
+		local packages = {}
+		local display_results = {}
+
+		-- Parse JSON output from cargo-outdated
+		for crate_block in output:gmatch('"name":%s*"([^"]+)".-"project":%s*"([^"]+)".-"latest":%s*"([^"]+)"') do
+			local name, current, latest = crate_block:match("([^,]+),([^,]+),(.+)")
+			if name and current and latest and current ~= latest then
+				packages[name] = latest
+				table.insert(display_results, string.format("🦀 %s: %s → %s", name, current, latest))
+			end
+		end
+
+		callback(packages, nil, display_results)
+	end)
+end
+
 local function get_python_vulnerabilities_async(callback)
 	local safety_path = vim.fn.exepath("safety")
 	if not safety_path or safety_path == "" or not uv.fs_stat(safety_path) then
@@ -468,6 +637,89 @@ local function get_go_vulnerabilities_async(callback)
 						)
 					)
 				end
+			end
+		end
+		callback(packages, nil, display_results)
+	end)
+end
+
+local function get_php_vulnerabilities_async(callback)
+	local cwd = vim.fn.getcwd()
+	if not vim.fn.filereadable(cwd .. "/composer.json") then
+		callback(nil, "No composer.json found in project")
+		return
+	end
+	local cmd = "composer audit --format=json"
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code ~= 0 then
+			local error_msg = table.concat(stderr_data, "")
+			callback(nil, "Composer audit failed: " .. (error_msg or "unknown error"))
+			return
+		end
+		local json_str = table.concat(stdout_data, "")
+		if json_str == "" or json_str == "[]" then
+			callback({}, nil, {})
+			return
+		end
+		local packages = {}
+		local display_results = {}
+		-- Parse vulnerabilities from composer audit
+		for vuln_match in json_str:gmatch('"package":%s*"([^"]+)".-"title":%s*"([^"]+)".-"severity":%s*"([^"]+)"') do
+			local package_name, title, severity = vuln_match:match("([^,]+),([^,]+),(.+)")
+			if package_name and title and severity then
+				if not packages[package_name] then
+					packages[package_name] = { severity = severity, count = 0, vulns = {} }
+				end
+				packages[package_name].count = packages[package_name].count + 1
+				table.insert(packages[package_name].vulns, { title = title })
+				table.insert(
+					display_results,
+					string.format("🔒 [%s] %s: %s", severity:upper(), package_name, title:sub(1, 80) .. "...")
+				)
+			end
+		end
+		callback(packages, nil, display_results)
+	end)
+end
+
+local function get_rust_vulnerabilities_async(callback)
+	local cwd = vim.fn.getcwd()
+	if not vim.fn.filereadable(cwd .. "/Cargo.toml") then
+		callback(nil, "No Cargo.toml found in project")
+		return
+	end
+	local cargo_audit_path = vim.fn.exepath("cargo-audit")
+	if not cargo_audit_path then
+		callback(nil, "cargo-audit not found. Install with: cargo install cargo-audit")
+		return
+	end
+	local cmd = "cargo audit --json"
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code ~= 0 then
+			local error_msg = table.concat(stderr_data, "")
+			callback(nil, "cargo audit failed: " .. (error_msg or "unknown error"))
+			return
+		end
+		local json_str = table.concat(stdout_data, "")
+		if json_str == "" then
+			callback({}, nil, {})
+			return
+		end
+		local packages = {}
+		local display_results = {}
+		-- Parse vulnerabilities from cargo audit
+		for vuln_match in json_str:gmatch('"package":%s*"([^"]+)".-"title":%s*"([^"]+)".-"severity":%s*"([^"]+)"') do
+			local package_name, title, severity = vuln_match:match("([^,]+),([^,]+),(.+)")
+			if package_name and title and severity then
+				if not packages[package_name] then
+					packages[package_name] = { severity = severity, count = 0, vulns = {} }
+				end
+				packages[package_name].count = packages[package_name].count + 1
+				table.insert(packages[package_name].vulns, { title = title })
+				table.insert(
+					display_results,
+					string.format("🔒 [%s] %s: %s", severity:upper(), package_name, title:sub(1, 80) .. "...")
+				)
 			end
 		end
 		callback(packages, nil, display_results)
@@ -566,6 +818,36 @@ function M.npm_telescope()
 	end)
 end
 
+function M.php_telescope()
+	vim.notify("🔍 Checking PHP dependencies...", vim.log.levels.INFO)
+	get_php_outdated_async(function(packages, error_msg, display_results)
+		if error_msg then
+			vim.notify("❌ " .. error_msg, vim.log.levels.ERROR)
+			return
+		end
+		if #display_results == 0 then
+			vim.notify("✅ No outdated PHP packages", vim.log.levels.INFO)
+			return
+		end
+		create_enhanced_picker("🐘 Outdated PHP Packages", display_results, "php")
+	end)
+end
+
+function M.rust_telescope()
+	vim.notify("🔍 Checking Rust dependencies...", vim.log.levels.INFO)
+	get_rust_outdated_async(function(packages, error_msg, display_results)
+		if error_msg then
+			vim.notify("❌ " .. error_msg, vim.log.levels.ERROR)
+			return
+		end
+		if #display_results == 0 then
+			vim.notify("✅ No outdated Rust crates", vim.log.levels.INFO)
+			return
+		end
+		create_enhanced_picker("🦀 Outdated Rust Crates", display_results, "rust")
+	end)
+end
+
 function M.python_vulnerabilities_telescope()
 	vim.notify("🔒 Scanning Python vulnerabilities...", vim.log.levels.INFO)
 	get_python_vulnerabilities_async(function(packages, error_msg, display_results)
@@ -608,6 +890,36 @@ function M.npm_vulnerabilities_telescope()
 			return
 		end
 		create_enhanced_picker("🔒 npm Security Vulnerabilities", display_results, "npm-vuln")
+	end)
+end
+
+function M.php_vulnerabilities_telescope()
+	vim.notify("🔒 Scanning PHP vulnerabilities...", vim.log.levels.INFO)
+	get_php_vulnerabilities_async(function(packages, error_msg, display_results)
+		if error_msg then
+			vim.notify("❌ " .. error_msg, vim.log.levels.ERROR)
+			return
+		end
+		if #display_results == 0 then
+			vim.notify("✅ No PHP vulnerabilities found", vim.log.levels.INFO)
+			return
+		end
+		create_enhanced_picker("🔒 PHP Security Vulnerabilities", display_results, "php-vuln")
+	end)
+end
+
+function M.rust_vulnerabilities_telescope()
+	vim.notify("🔒 Scanning Rust vulnerabilities...", vim.log.levels.INFO)
+	get_rust_vulnerabilities_async(function(packages, error_msg, display_results)
+		if error_msg then
+			vim.notify("❌ " .. error_msg, vim.log.levels.ERROR)
+			return
+		end
+		if #display_results == 0 then
+			vim.notify("✅ No Rust vulnerabilities found", vim.log.levels.INFO)
+			return
+		end
+		create_enhanced_picker("🔒 Rust Security Vulnerabilities", display_results, "rust-vuln")
 	end)
 end
 
@@ -668,6 +980,44 @@ function M.npm_highlight()
 	end)
 end
 
+function M.php_highlight()
+	setup_highlights()
+	rebuild_buffer_cache()
+	get_php_outdated_async(function(packages, error_msg)
+		if error_msg then
+			vim.notify("❌ " .. error_msg, vim.log.levels.ERROR)
+			return
+		end
+		if not packages or vim.tbl_isempty(packages) then
+			vim.notify("✅ No outdated PHP packages to highlight", vim.log.levels.INFO)
+			return
+		end
+		outdated_packages.php = packages
+		highlight_composer_json()
+		local count = vim.tbl_count(packages)
+		vim.notify(string.format("✨ Highlighted %d outdated PHP packages", count), vim.log.levels.INFO)
+	end)
+end
+
+function M.rust_highlight()
+	setup_highlights()
+	rebuild_buffer_cache()
+	get_rust_outdated_async(function(packages, error_msg)
+		if error_msg then
+			vim.notify("❌ " .. error_msg, vim.log.levels.ERROR)
+			return
+		end
+		if not packages or vim.tbl_isempty(packages) then
+			vim.notify("✅ No outdated Rust crates to highlight", vim.log.levels.INFO)
+			return
+		end
+		outdated_packages.rust = packages
+		highlight_cargo_toml()
+		local count = vim.tbl_count(packages)
+		vim.notify(string.format("✨ Highlighted %d outdated Rust crates", count), vim.log.levels.INFO)
+	end)
+end
+
 local function setup_auto_highlighting()
 	local group = vim.api.nvim_create_augroup("OutdatedPackageHighlight", { clear = true })
 	vim.api.nvim_create_autocmd({ "BufAdd", "BufDelete", "BufWipeout" }, {
@@ -696,6 +1046,22 @@ local function setup_auto_highlighting()
 		callback = function()
 			clear_caches()
 			M.npm_highlight()
+		end,
+	})
+	vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost" }, {
+		group = group,
+		pattern = "composer.json",
+		callback = function()
+			clear_caches()
+			M.php_highlight()
+		end,
+	})
+	vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost" }, {
+		group = group,
+		pattern = "Cargo.toml",
+		callback = function()
+			clear_caches()
+			M.rust_highlight()
 		end,
 	})
 end
@@ -731,6 +1097,14 @@ function M.check_all()
 	end
 	if vim.fn.filereadable(cwd .. "/package.json") == 1 then
 		M.npm_highlight()
+		checks_started = checks_started + 1
+	end
+	if vim.fn.filereadable(cwd .. "/composer.json") == 1 then
+		M.php_highlight()
+		checks_started = checks_started + 1
+	end
+	if vim.fn.filereadable(cwd .. "/Cargo.toml") == 1 then
+		M.rust_highlight()
 		checks_started = checks_started + 1
 	end
 	if checks_started == 0 then
