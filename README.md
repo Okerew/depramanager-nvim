@@ -40,9 +40,13 @@ depramanager.setup()
 vim.keymap.set('n', '<leader>dp', depramanager.python_telescope, { desc = 'Outdated Python packages' })
 vim.keymap.set('n', '<leader>dg', depramanager.go_telescope, { desc = 'Outdated Go modules' })
 vim.keymap.set('n', '<leader>dn', depramanager.npm_telescope, { desc = 'Outdated npm packages' })
+vim.keymap.set('n', '<leader>dph', depramanager.php_telescope, { desc = 'Outdated php packages' })
+vim.keymap.set('n', '<leader>dr', depramanager.rust_telescope, { desc = 'Outdated rust packages' })
 vim.keymap.set('n', '<leader>dvp', depramanager.python_vulnerabilities_telescope, { desc = 'Outdated Python packages' })
 vim.keymap.set('n', '<leader>dvg', depramanager.go_vulnerabilities_telescope, { desc = 'Outdated Go modules' })
 vim.keymap.set('n', '<leader>dvn', depramanager.npm_vulnerabilities_telescope, { desc = 'Outdated npm packages' })
+vim.keymap.set('n', '<leader>dvph', depramanager.npm_vulnerabilities_telescope, { desc = 'Outdated php packages' })
+vim.keymap.set('n', '<leader>dvr', depramanager.npm_vulnerabilities_telescope, { desc = 'Outdated rust packages' })
 ```
 
 If using vim plug you need to add lua << EOF blocks.
