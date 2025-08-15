@@ -1,6 +1,13 @@
 # depramanager-nvim
 Depramanager port for nvim
 
+### Requirements
+pip obviosly for python 
+nodejs for js obviosly
+cargo-outdated (not so obvious now is it)
+golang for go obviosly
+composer for php also not so obvious
+
 ### Features
 
 **Vulnerability scanning**
