@@ -253,52 +253,6 @@ local function highlight_cargo_toml()
 	end
 end
 
-local function create_enhanced_picker(title, results, lang)
-	if #results == 0 then
-		vim.notify("✅ No results to display", vim.log.levels.INFO)
-		return
-	end
-	pickers
-		.new({}, {
-			prompt_title = title,
-			finder = finders.new_table({ results = results }),
-			sorter = conf.generic_sorter({}),
-			previewer = false,
-			layout_config = {
-				height = math.min(#results + 5, 20),
-				width = 0.8,
-			},
-			attach_mappings = function(prompt_bufnr, map)
-				map("i", "<CR>", function()
-					local selection = action_state.get_selected_entry()
-					if not selection then
-						vim.notify("No selection made", vim.log.levels.WARN)
-						return
-					end
-					actions.close(prompt_bufnr)
-					vim.notify("📋 Copied to clipboard: " .. selection[1], vim.log.levels.INFO)
-					vim.fn.setreg("+", selection[1])
-				end)
-				map("i", "<C-r>", function()
-					actions.close(prompt_bufnr)
-					if lang == "python" then
-						M.python_telescope()
-					elseif lang == "go" then
-						M.go_telescope()
-					elseif lang == "npm" then
-						M.npm_telescope()
-					elseif lang == "php" then
-						M.php_telescope()
-					elseif lang == "rust" then
-						M.rust_telescope()
-					end
-				end)
-				return true
-			end,
-		})
-		:find()
-end
-
 local function run_command_async(cmd, callback)
 	local stdout = uv.new_pipe(false)
 	local stderr = uv.new_pipe(false)
@@ -336,6 +290,178 @@ local function run_command_async(cmd, callback)
 			table.insert(stderr_data, data)
 		end
 	end)
+end
+
+local function update_python_package(package_name, callback)
+	local function find_venv()
+		local paths = { ".venv", "venv", "env" }
+		for _, dir in ipairs(paths) do
+			local full = vim.fn.getcwd() .. "/" .. dir
+			local python = full .. "/bin/python"
+			if uv.fs_stat(python) then
+				return python
+			end
+		end
+		return nil
+	end
+
+	local python = find_venv()
+	if not python then
+		local system_python = vim.fn.exepath("python3") or vim.fn.exepath("python")
+		if not system_python then
+			callback(false, "No Python executable found")
+			return
+		end
+		python = system_python
+	end
+
+	local cmd = python .. " -m pip install --upgrade " .. package_name
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name)
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function update_go_package(package_name, callback)
+	local cmd = "go get -u " .. package_name
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name)
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function update_npm_package(package_name, callback)
+	local cmd = "npm install " .. package_name .. "@latest"
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name)
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function update_php_package(package_name, callback)
+	local cmd = "composer update " .. package_name
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name)
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function update_rust_package(package_name, callback)
+	local cmd = "cargo update -p " .. package_name
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name)
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function create_picker(title, results, lang, package_data)
+	if #results == 0 then
+		vim.notify("✅ No results to display", vim.log.levels.INFO)
+		return
+	end
+	pickers
+		.new({}, {
+			prompt_title = title,
+			finder = finders.new_table({ results = results }),
+			sorter = conf.generic_sorter({}),
+			previewer = false,
+			layout_config = {
+				height = math.min(#results + 5, 20),
+				width = 0.8,
+			},
+			attach_mappings = function(prompt_bufnr, map)
+				map("i", "<CR>", function()
+					local selection = action_state.get_selected_entry()
+					if not selection then
+						vim.notify("No selection made", vim.log.levels.WARN)
+						return
+					end
+					actions.close(prompt_bufnr)
+
+					-- Extract package name from display text
+					local package_name = package_data[selection.index]
+					if not package_name then
+						vim.notify("Could not determine package name", vim.log.levels.ERROR)
+						return
+					end
+
+					vim.notify("🔄 Updating " .. package_name .. "...", vim.log.levels.INFO)
+
+					-- Call appropriate update function based on language
+					local update_func
+					if lang == "python" then
+						update_func = update_python_package
+					elseif lang == "go" then
+						update_func = update_go_package
+					elseif lang == "npm" then
+						update_func = update_npm_package
+					elseif lang == "php" then
+						update_func = update_php_package
+					elseif lang == "rust" then
+						update_func = update_rust_package
+					else
+						vim.notify("Unknown package manager: " .. lang, vim.log.levels.ERROR)
+						return
+					end
+
+					update_func(package_name, function(success, message)
+						if success then
+							vim.notify("✅ " .. message, vim.log.levels.INFO)
+							-- Refresh the check after successful update
+							if lang == "python" then
+								M.python_highlight()
+							elseif lang == "go" then
+								M.go_highlight()
+							elseif lang == "npm" then
+								M.npm_highlight()
+							elseif lang == "php" then
+								M.php_highlight()
+							elseif lang == "rust" then
+								M.rust_highlight()
+							end
+						else
+							vim.notify("❌ " .. message, vim.log.levels.ERROR)
+						end
+					end)
+				end)
+				map("i", "<C-r>", function()
+					actions.close(prompt_bufnr)
+					if lang == "python" then
+						M.python_telescope()
+					elseif lang == "go" then
+						M.go_telescope()
+					elseif lang == "npm" then
+						M.npm_telescope()
+					elseif lang == "php" then
+						M.php_telescope()
+					elseif lang == "rust" then
+						M.rust_telescope()
+					end
+				end)
+				return true
+			end,
+		})
+		:find()
 end
 
 local function get_python_outdated_async(callback)
@@ -824,7 +950,15 @@ function M.python_telescope()
 			vim.notify("✅ No outdated Python packages", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("📦 Outdated Python Packages", display_results, "python")
+
+		-- Extract package names for updating
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("📦 ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_picker("📦 Outdated Python Packages", display_results, "python", package_data)
 	end)
 end
 
@@ -839,7 +973,15 @@ function M.go_telescope()
 			vim.notify("✅ No outdated Go modules", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("🚀 Outdated Go Modules", display_results, "go")
+
+		-- Extract package names for updating
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("🚀 ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_picker("🚀 Outdated Go Modules", display_results, "go", package_data)
 	end)
 end
 
@@ -854,7 +996,15 @@ function M.npm_telescope()
 			vim.notify("✅ No outdated npm packages", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("📦 Outdated npm Packages", display_results, "npm")
+
+		-- Extract package names for updating
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("📦 ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_picker("📦 Outdated npm Packages", display_results, "npm", package_data)
 	end)
 end
 
@@ -869,7 +1019,15 @@ function M.php_telescope()
 			vim.notify("✅ No outdated PHP packages", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("🐘 Outdated PHP Packages", display_results, "php")
+
+		-- Extract package names for updating
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("🐘 ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_picker("🐘 Outdated PHP Packages", display_results, "php", package_data)
 	end)
 end
 
@@ -884,8 +1042,208 @@ function M.rust_telescope()
 			vim.notify("✅ No outdated Rust crates", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("🦀 Outdated Rust Crates", display_results, "rust")
+
+		-- Extract package names for updating
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("🦀 ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_picker("🦀 Outdated Rust Crates", display_results, "rust", package_data)
 	end)
+end
+
+-- Vulnerability fix functions
+local function fix_python_vulnerability(package_name, callback)
+	local function find_venv()
+		local paths = { ".venv", "venv", "env" }
+		for _, dir in ipairs(paths) do
+			local full = vim.fn.getcwd() .. "/" .. dir
+			local python = full .. "/bin/python"
+			if uv.fs_stat(python) then
+				return python
+			end
+		end
+		return nil
+	end
+
+	local python = find_venv()
+	if not python then
+		local system_python = vim.fn.exepath("python3") or vim.fn.exepath("python")
+		if not system_python then
+			callback(false, "No Python executable found")
+			return
+		end
+		python = system_python
+	end
+
+	-- Try to update the package to latest secure version
+	local cmd = python .. " -m pip install --upgrade " .. package_name
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name .. " to fix vulnerabilities")
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function fix_go_vulnerability(package_name, callback)
+	-- Go uses 'go get -u' to update to latest version which should include security fixes
+	local cmd = "go get -u " .. package_name
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name .. " to fix vulnerabilities")
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function fix_npm_vulnerability(package_name, callback)
+	-- npm audit fix can automatically fix vulnerabilities
+	-- First try audit fix for the specific package, then fallback to update
+	local cmd = "npm audit fix --force"
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully ran audit fix for vulnerabilities")
+		else
+			-- Fallback to updating the specific package
+			local update_cmd = "npm install " .. package_name .. "@latest"
+			run_command_async(update_cmd, function(update_code, update_stdout, update_stderr)
+				if update_code == 0 then
+					callback(true, "Successfully updated " .. package_name .. " to fix vulnerabilities")
+				else
+					local error_msg = table.concat(update_stderr, "") or table.concat(update_stdout, "")
+					callback(false, "Failed to fix vulnerabilities for " .. package_name .. ": " .. error_msg)
+				end
+			end)
+		end
+	end)
+end
+
+local function fix_php_vulnerability(package_name, callback)
+	-- Composer update to get security fixes
+	local cmd = "composer update " .. package_name
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name .. " to fix vulnerabilities")
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function fix_rust_vulnerability(package_name, callback)
+	-- Cargo update to get security fixes
+	local cmd = "cargo update -p " .. package_name
+	run_command_async(cmd, function(code, stdout_data, stderr_data)
+		if code == 0 then
+			callback(true, "Successfully updated " .. package_name .. " to fix vulnerabilities")
+		else
+			local error_msg = table.concat(stderr_data, "") or table.concat(stdout_data, "")
+			callback(false, "Failed to update " .. package_name .. ": " .. error_msg)
+		end
+	end)
+end
+
+local function create_vulnerability_picker(title, results, lang, package_data)
+	if #results == 0 then
+		vim.notify("✅ No results to display", vim.log.levels.INFO)
+		return
+	end
+	pickers
+		.new({}, {
+			prompt_title = title,
+			finder = finders.new_table({ results = results }),
+			sorter = conf.generic_sorter({}),
+			previewer = false,
+			layout_config = {
+				height = math.min(#results + 5, 20),
+				width = 0.8,
+			},
+			attach_mappings = function(prompt_bufnr, map)
+				map("i", "<CR>", function()
+					local selection = action_state.get_selected_entry()
+					if not selection then
+						vim.notify("No selection made", vim.log.levels.WARN)
+						return
+					end
+					actions.close(prompt_bufnr)
+
+					-- Extract package name from display text
+					local package_name = package_data[selection.index]
+					if not package_name then
+						vim.notify("Could not determine package name", vim.log.levels.ERROR)
+						return
+					end
+
+					vim.notify(
+						"🔧 Attempting to fix vulnerabilities in " .. package_name .. "...",
+						vim.log.levels.INFO
+					)
+
+					-- Call appropriate fix function based on language
+					local fix_func
+					if lang == "python-vuln" then
+						fix_func = fix_python_vulnerability
+					elseif lang == "go-vuln" then
+						fix_func = fix_go_vulnerability
+					elseif lang == "npm-vuln" then
+						fix_func = fix_npm_vulnerability
+					elseif lang == "php-vuln" then
+						fix_func = fix_php_vulnerability
+					elseif lang == "rust-vuln" then
+						fix_func = fix_rust_vulnerability
+					else
+						vim.notify("Unknown vulnerability type: " .. lang, vim.log.levels.ERROR)
+						return
+					end
+
+					fix_func(package_name, function(success, message)
+						if success then
+							vim.notify("✅ " .. message, vim.log.levels.INFO)
+							-- Refresh the vulnerability check after successful fix
+							vim.schedule(function()
+								if lang == "python-vuln" then
+									M.python_vulnerabilities_telescope()
+								elseif lang == "go-vuln" then
+									M.go_vulnerabilities_telescope()
+								elseif lang == "npm-vuln" then
+									M.npm_vulnerabilities_telescope()
+								elseif lang == "php-vuln" then
+									M.php_vulnerabilities_telescope()
+								elseif lang == "rust-vuln" then
+									M.rust_vulnerabilities_telescope()
+								end
+							end)
+						else
+							vim.notify("❌ " .. message, vim.log.levels.ERROR)
+						end
+					end)
+				end)
+				map("i", "<C-r>", function()
+					actions.close(prompt_bufnr)
+					if lang == "python-vuln" then
+						M.python_vulnerabilities_telescope()
+					elseif lang == "go-vuln" then
+						M.go_vulnerabilities_telescope()
+					elseif lang == "npm-vuln" then
+						M.npm_vulnerabilities_telescope()
+					elseif lang == "php-vuln" then
+						M.php_vulnerabilities_telescope()
+					elseif lang == "rust-vuln" then
+						M.rust_vulnerabilities_telescope()
+					end
+				end)
+				return true
+			end,
+		})
+		:find()
 end
 
 function M.python_vulnerabilities_telescope()
@@ -899,7 +1257,20 @@ function M.python_vulnerabilities_telescope()
 			vim.notify("✅ No Python vulnerabilities found", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("🔒 Python Security Vulnerabilities", display_results, "python-vuln")
+
+		-- Extract package names for fixing
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("🔒 %[.-%] ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_vulnerability_picker(
+			"🔒 Python Security Vulnerabilities",
+			display_results,
+			"python-vuln",
+			package_data
+		)
 	end)
 end
 
@@ -914,7 +1285,15 @@ function M.go_vulnerabilities_telescope()
 			vim.notify("✅ No Go vulnerabilities found", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("🔒 Go Security Vulnerabilities", display_results, "go-vuln")
+
+		-- Extract package names for fixing
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("🔒 %[.-%] ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_vulnerability_picker("🔒 Go Security Vulnerabilities", display_results, "go-vuln", package_data)
 	end)
 end
 
@@ -929,7 +1308,15 @@ function M.npm_vulnerabilities_telescope()
 			vim.notify("✅ No npm vulnerabilities found", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("🔒 npm Security Vulnerabilities", display_results, "npm-vuln")
+
+		-- Extract package names for fixing
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("🔒 %[.-%] ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_vulnerability_picker("🔒 npm Security Vulnerabilities", display_results, "npm-vuln", package_data)
 	end)
 end
 
@@ -944,7 +1331,15 @@ function M.php_vulnerabilities_telescope()
 			vim.notify("✅ No PHP vulnerabilities found", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("🔒 PHP Security Vulnerabilities", display_results, "php-vuln")
+
+		-- Extract package names for fixing
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("🔒 %[.-%] ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_vulnerability_picker("🔒 PHP Security Vulnerabilities", display_results, "php-vuln", package_data)
 	end)
 end
 
@@ -959,7 +1354,15 @@ function M.rust_vulnerabilities_telescope()
 			vim.notify("✅ No Rust vulnerabilities found", vim.log.levels.INFO)
 			return
 		end
-		create_enhanced_picker("🔒 Rust Security Vulnerabilities", display_results, "rust-vuln")
+
+		-- Extract package names for fixing
+		local package_data = {}
+		for i, result in ipairs(display_results) do
+			local package_name = result:match("🔒 %[.-%] ([^:]+):")
+			package_data[i] = package_name
+		end
+
+		create_vulnerability_picker("🔒 Rust Security Vulnerabilities", display_results, "rust-vuln", package_data)
 	end)
 end
 
