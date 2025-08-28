@@ -379,6 +379,7 @@ local function create_picker(title, results, lang, package_data)
 		vim.notify("✅ No results to display", vim.log.levels.INFO)
 		return
 	end
+
 	pickers
 		.new({}, {
 			prompt_title = title,
@@ -390,7 +391,7 @@ local function create_picker(title, results, lang, package_data)
 				width = 0.8,
 			},
 			attach_mappings = function(prompt_bufnr, map)
-				map("i", "<CR>", function()
+				actions.select_default:replace(function()
 					local selection = action_state.get_selected_entry()
 					if not selection then
 						vim.notify("No selection made", vim.log.levels.WARN)
@@ -398,7 +399,6 @@ local function create_picker(title, results, lang, package_data)
 					end
 					actions.close(prompt_bufnr)
 
-					-- Extract package name from display text
 					local package_name = package_data[selection.index]
 					if not package_name then
 						vim.notify("Could not determine package name", vim.log.levels.ERROR)
@@ -407,7 +407,6 @@ local function create_picker(title, results, lang, package_data)
 
 					vim.notify("🔄 Updating " .. package_name .. "...", vim.log.levels.INFO)
 
-					-- Call appropriate update function based on language
 					local update_func
 					if lang == "python" then
 						update_func = update_python_package
@@ -427,7 +426,7 @@ local function create_picker(title, results, lang, package_data)
 					update_func(package_name, function(success, message)
 						if success then
 							vim.notify("✅ " .. message, vim.log.levels.INFO)
-							-- Refresh the check after successful update
+							-- Refresh highlights
 							if lang == "python" then
 								M.python_highlight()
 							elseif lang == "go" then
@@ -444,6 +443,8 @@ local function create_picker(title, results, lang, package_data)
 						end
 					end)
 				end)
+
+				-- Custom <C-r> mapping
 				map("i", "<C-r>", function()
 					actions.close(prompt_bufnr)
 					if lang == "python" then
@@ -458,6 +459,7 @@ local function create_picker(title, results, lang, package_data)
 						M.rust_telescope()
 					end
 				end)
+
 				return true
 			end,
 		})
@@ -1156,6 +1158,7 @@ local function create_vulnerability_picker(title, results, lang, package_data)
 		vim.notify("✅ No results to display", vim.log.levels.INFO)
 		return
 	end
+
 	pickers
 		.new({}, {
 			prompt_title = title,
@@ -1167,7 +1170,7 @@ local function create_vulnerability_picker(title, results, lang, package_data)
 				width = 0.8,
 			},
 			attach_mappings = function(prompt_bufnr, map)
-				map("i", "<CR>", function()
+				actions.select_default:replace(function()
 					local selection = action_state.get_selected_entry()
 					if not selection then
 						vim.notify("No selection made", vim.log.levels.WARN)
@@ -1175,7 +1178,6 @@ local function create_vulnerability_picker(title, results, lang, package_data)
 					end
 					actions.close(prompt_bufnr)
 
-					-- Extract package name from display text
 					local package_name = package_data[selection.index]
 					if not package_name then
 						vim.notify("Could not determine package name", vim.log.levels.ERROR)
@@ -1187,7 +1189,6 @@ local function create_vulnerability_picker(title, results, lang, package_data)
 						vim.log.levels.INFO
 					)
 
-					-- Call appropriate fix function based on language
 					local fix_func
 					if lang == "python-vuln" then
 						fix_func = fix_python_vulnerability
@@ -1207,7 +1208,6 @@ local function create_vulnerability_picker(title, results, lang, package_data)
 					fix_func(package_name, function(success, message)
 						if success then
 							vim.notify("✅ " .. message, vim.log.levels.INFO)
-							-- Refresh the vulnerability check after successful fix
 							vim.schedule(function()
 								if lang == "python-vuln" then
 									M.python_vulnerabilities_telescope()
@@ -1226,6 +1226,8 @@ local function create_vulnerability_picker(title, results, lang, package_data)
 						end
 					end)
 				end)
+
+				-- Custom <C-r> mapping
 				map("i", "<C-r>", function()
 					actions.close(prompt_bufnr)
 					if lang == "python-vuln" then
@@ -1240,6 +1242,7 @@ local function create_vulnerability_picker(title, results, lang, package_data)
 						M.rust_vulnerabilities_telescope()
 					end
 				end)
+
 				return true
 			end,
 		})
