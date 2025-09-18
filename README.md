@@ -20,6 +20,9 @@ Note: you must wait a bit if there are a lot of packages.
 
 ### Installation:
 Any plugin manager should do the job but here is an example with vim plug
+
+**Note** nvim notify doesn't have to be installed for the plugin to work it just looks nice.
+
 ```vim
 Plug 'rcarriga/nvim-notify'
 Plug 'nvim-telescope/telescope.nvim'
