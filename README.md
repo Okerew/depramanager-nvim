@@ -4,7 +4,7 @@ Depramanager port for nvim
 ### Requirements
 * pip obviosly for python 
 * nodejs for js obviously
-* cargo-outdated and cargo audit (not so obvious now is it)
+* cargo audit (not so obvious now is it)
 * golang for go obviously
 * composer for php also not so obvious
 
