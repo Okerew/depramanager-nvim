@@ -1,6 +1,11 @@
 # depramanager-nvim
 Depramanager port for nvim
 
+## Deprecated
+Why did I deprecate this?
+
+I found that this plugin is quite pointless for my workflow as I don't really update depedencies.
+
 ### Requirements
 * pip obviosly for python 
 * nodejs for js obviously
